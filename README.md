@@ -97,14 +97,28 @@ All requests are performed using your own authenticated Wispr Flow account, subj
 
 **Requirements:** Python 3.9+, FFmpeg on PATH, Wispr Flow desktop app installed and logged in.
 
-```bash
-pip install wisprflow-sdk
-```
-or
+Adding the published package to another project:
 
 ```bash
 uv add wisprflow-sdk
 ```
+or
+
+```bash
+pip install wisprflow-sdk
+```
+
+Working from a clone (recommended — the examples below assume it):
+
+```bash
+git clone https://github.com/tindn/wisprflow-sdk
+cd wisprflow-sdk
+uv sync
+```
+
+`uv sync` reads `.python-version` (3.14) and `uv.lock`, creates `.venv`, and installs the project in editable mode. Prefix commands with `uv run` instead of activating the environment — it re-syncs first, so the venv never goes stale.
+
+`pip install -e .` also works, but it ignores `uv.lock` and the pinned interpreter, so you end up with different dependency versions than the project was tested against.
 ---
 
 ## Setup
@@ -113,7 +127,31 @@ uv add wisprflow-sdk
 
 Install and log into the official Wispr Flow desktop application.
 
-### 2. Run the patch
+### macOS setup (skip steps 2–3)
+
+`wisprflow-patch` is Windows-only, and the runtime config it exported no longer exists in current Wispr Flow builds, so macOS replaces both steps with a shim:
+
+* auth is read from `~/Library/Application Support/Wispr Flow/session.json` — `workosSession.accessToken` in current builds, the legacy Supabase key in older ones
+* `user_id` comes from the account UUID stored there, because the backend rejects WorkOS `sub` subjects with `INVALID_ARGUMENT: Invalid UUID`
+* requests go to the endpoint the desktop client actually uses, without the obsolete Baseten headers
+
+`macos_shim.py` holds the adapter and `sitecustomize.py` loads it automatically — but only when the repo root is on `sys.path`. That is why every `uv run` command below sets `PYTHONPATH=.`:
+
+```bash
+uv sync
+PYTHONPATH=. uv run wisprflow audio.wav
+```
+
+Scripts living outside the repo need the shim imported explicitly:
+
+```python
+import sys
+sys.path.insert(0, "/path/to/wisprflow-sdk")
+import macos_shim  # noqa: F401
+from wisprflow_sdk import WisprClient
+```
+
+### 2. Run the patch (Windows only)
 
 ```bash
 wisprflow-patch
@@ -141,10 +179,10 @@ print(client.auth_status())
 # {"ok": True, "status": "valid", "expires_utc": "...", "seconds_remaining": 3600}
 ```
 
-The SDK expects these two files to exist:
+The SDK expects these two files to exist (Windows paths shown — on macOS `session.json` lives in `~/Library/Application Support/Wispr Flow/`, and the shim needs no runtime file):
 
 ```
-%APPDATA%\Wispr Flow\session.json       ← created by Wispr login
+%APPDATA%\Wispr Flow\session.json            ← created by Wispr login
 %LOCALAPPDATA%\WisprFlow\wispr_runtime.json  ← created by the patch
 ```
 
@@ -253,23 +291,27 @@ Limits: 300 seconds, 25 MB per session.
 
 ## CLI
 
+Run these from the repo root. `PYTHONPATH=.` is what lets `sitecustomize.py` load the macOS shim, so do not drop it:
+
 ```bash
 # Basic transcription
-wisprflow audio.wav
+PYTHONPATH=. uv run wisprflow audio.wav
 
 # With options
-wisprflow audio.wav --style FORMAL --cleanup MEDIUM --languages en hien
+PYTHONPATH=. uv run wisprflow audio.wav --style FORMAL --cleanup MEDIUM --languages en hien
 
 # With context
-wisprflow audio.wav --before "Dear John," --after "Regards"
+PYTHONPATH=. uv run wisprflow audio.wav --before "Dear John," --after "Regards"
 
 # Test matrices
-wisprflow audio.wav --matrix-cleanup # detailed explaination in the example file
-wisprflow audio.wav --matrix-language
+PYTHONPATH=. uv run wisprflow audio.wav --matrix-cleanup # detailed explaination in the example file
+PYTHONPATH=. uv run wisprflow audio.wav --matrix-language
 
 # Debug output
-wisprflow audio.wav --verbose
+PYTHONPATH=. uv run wisprflow audio.wav --verbose
 ```
+
+If the package is installed from PyPI rather than cloned, call `wisprflow ...` directly.
 
 ---
 
@@ -309,7 +351,11 @@ client = WisprClient(config_path="/path/to/config.json")
 wisprflow_sdk/
 ├── __init__.py        ← public exports
 ├── _core.py           ← entire SDK implementation
-└── _installer.py      ← wisprflow-patch entry point
+├── _installer.py      ← wisprflow-patch entry point
+└── patch_wispr.ps1    ← Windows patch script
+
+macos_shim.py          ← macOS adapter (paths, WorkOS auth, gRPC host)
+sitecustomize.py       ← loads macos_shim when the repo root is on sys.path
 ```
 
 The implementation is intentionally self-contained in `_core.py`. No local servers, browser automation, or multi-module dependency chains.
@@ -337,7 +383,8 @@ These files may contain authentication tokens, API keys, and personal vocabulary
 
 ## Limitations
 
-* Patch script is Windows-only
+* Patch script is Windows-only; macOS uses the shim described above
+* The macOS shim depends on WorkOS auth storage (`workosSession.accessToken`) and the current gRPC hostname — either can change with any Wispr Flow update
 * Depends on implementation details from the Wispr desktop client — future Wispr updates may change authentication storage, runtime config format, gRPC message structure, or API endpoints
 * The `session.json` key name is Supabase project-specific and may change if Wispr rotates their backend
 
